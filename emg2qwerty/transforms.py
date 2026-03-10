@@ -8,10 +8,11 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Any, TypeVar
 
+from scipy.signal import butter, sosfiltfilt
 import numpy as np
 import torch
 import torchaudio
-import torchaudio.functional as AF
+
 
 
 TTransformIn = TypeVar("TTransformIn")
@@ -248,44 +249,29 @@ class SpecAugment:
 
 @dataclass
 class BandpassFilter:
-    """Applies a Butterworth-like IIR bandpass using cascaded biquads
-    (high-pass then low-pass) along the time axis.
-
-    Input shape must be (T, ...), where T is time.
-
-    Args:
-        sample_rate (int): Signal sampling rate in Hz.
-        low_cut_hz (float): High-pass cutoff frequency in Hz.
-        high_cut_hz (float): Low-pass cutoff frequency in Hz.
-        order (int): Number of cascaded biquad stages for each filter.
-            Higher values make the roll-off steeper. (default: 2)
-    """
-
     sample_rate: int = 2000
     low_cut_hz: float = 20.0
     high_cut_hz: float = 450.0
-    order: int = 2
+    order: int = 4
 
     def __post_init__(self) -> None:
         assert self.sample_rate > 0
-        assert 0.0 < self.low_cut_hz < self.high_cut_hz
-        assert self.high_cut_hz < self.sample_rate / 2
-        assert self.order >= 1
+        assert 0.0 < self.low_cut_hz < self.high_cut_hz < self.sample_rate / 2
+        self.sos = butter(
+            self.order,
+            [self.low_cut_hz, self.high_cut_hz],
+            btype="bandpass",
+            fs=self.sample_rate,
+            output="sos",
+        )
 
     def __call__(self, tensor: torch.Tensor) -> torch.Tensor:
         # (T, ...) -> (..., T)
-        x = tensor.movedim(0, -1)
-
-        for _ in range(self.order):
-            x = AF.highpass_biquad(
-                x, sample_rate=self.sample_rate, cutoff_freq=self.low_cut_hz
-            )
-            x = AF.lowpass_biquad(
-                x, sample_rate=self.sample_rate, cutoff_freq=self.high_cut_hz
-            )
-
+        x = tensor.detach().cpu().numpy().movedim(0, -1)
+        y = sosfiltfilt(self.sos, x, axis=-1)
+        y = torch.as_tensor(y, dtype=tensor.dtype, device=tensor.device)
         # (..., T) -> (T, ...)
-        return x.movedim(-1, 0)
+        return y.movedim(-1, 0)
 
 
 @dataclass
