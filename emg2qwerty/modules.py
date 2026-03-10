@@ -278,3 +278,75 @@ class TDSConvEncoder(nn.Module):
 
     def forward(self, inputs: torch.Tensor) -> torch.Tensor:
         return self.tds_conv_blocks(inputs)  # (T, N, num_features)
+
+
+class Conv1DBiLSTMEncoder(nn.Module):
+    """A simple 1D temporal convolutional stack followed by a
+    bidirectional LSTM encoder.
+
+    Args:
+        num_features (int): Input feature dimension for each time step.
+        conv_channels (list): List of output channels for successive Conv1d
+            layers. Each Conv1d preserves sequence length using padding.
+        kernel_size (int): Kernel width for Conv1d layers.
+        lstm_hidden (int): Hidden size for the LSTM (per direction).
+        lstm_layers (int): Number of LSTM layers.
+        dropout (float): Dropout applied after LSTM.
+    """
+
+    def __init__(
+        self,
+        num_features: int,
+        conv_channels: Sequence[int] = (128, 128),
+        kernel_size: int = 3,
+        lstm_hidden: int = 256,
+        lstm_layers: int = 2,
+        dropout: float = 0.1,
+    ) -> None:
+        super().__init__()
+
+        assert len(conv_channels) > 0
+        self.num_features = num_features
+        self.conv_channels = list(conv_channels)
+
+        layers: list[nn.Module] = []
+        in_ch = num_features
+        for out_ch in self.conv_channels:
+            layers.extend(
+                [
+                    nn.Conv1d(in_ch, out_ch, kernel_size, padding=kernel_size // 2),
+                    nn.ReLU(),
+                    nn.BatchNorm1d(out_ch),
+                ]
+            )
+            in_ch = out_ch
+
+        self.conv_net = nn.Sequential(*layers)
+
+        self.lstm = nn.LSTM(
+            input_size=self.conv_channels[-1],
+            hidden_size=lstm_hidden,
+            num_layers=lstm_layers,
+            bidirectional=True,
+        )
+
+        self.dropout = nn.Dropout(dropout)
+
+    def forward(self, inputs: torch.Tensor) -> torch.Tensor:
+        # inputs: (T, N, num_features)
+        T, N, F = inputs.shape
+
+        # Prepare for Conv1d: (N, C_in, L=T)
+        x = inputs.permute(1, 2, 0)
+
+        # Apply conv stack: (N, C_out, T)
+        x = self.conv_net(x)
+
+        # Prepare for LSTM: (T, N, C_out)
+        x = x.permute(2, 0, 1)
+
+        # LSTM -> (T, N, hidden*2)
+        x, _ = self.lstm(x)
+
+        x = self.dropout(x)
+        return x
