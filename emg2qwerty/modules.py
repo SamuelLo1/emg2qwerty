@@ -474,3 +474,72 @@ class Conv1DTransformerEncoder(nn.Module):
         # Transformer expects (T, N, C)
         x = self.transformer(x)  # (T, N, d_model)
         return x
+
+
+class Conv1DGRUEncoder(nn.Module):
+    """Conv1D frontend followed by a deep GRU encoder.
+
+    Inputs: (T, N, num_features) -> Outputs: (T, N, out_dim)
+
+    Args:
+        num_features: input feature dim per timestep
+        conv_channels: channels for stacked Conv1d layers
+        kernel_size: conv kernel size (padding preserves length)
+        gru_hidden: hidden size for GRU (per direction)
+        gru_layers: number of GRU layers
+        bidirectional: whether GRU is bidirectional
+        dropout: dropout after GRU
+    """
+
+    def __init__(
+        self,
+        num_features: int,
+        conv_channels: Sequence[int] = (128, 128),
+        kernel_size: int = 3,
+        gru_hidden: int = 256,
+        gru_layers: int = 2,
+        bidirectional: bool = True,
+        dropout: float = 0.1,
+    ) -> None:
+        super().__init__()
+
+        assert len(conv_channels) > 0
+        layers: list[nn.Module] = []
+        in_ch = num_features
+        for out_ch in conv_channels:
+            layers.extend(
+                [
+                    nn.Conv1d(in_ch, out_ch, kernel_size, padding=kernel_size // 2),
+                    nn.ReLU(),
+                    nn.BatchNorm1d(out_ch),
+                ]
+            )
+            in_ch = out_ch
+
+        self.conv_net = nn.Sequential(*layers)
+
+        self.gru = nn.GRU(
+            input_size=in_ch,
+            hidden_size=gru_hidden,
+            num_layers=gru_layers,
+            bidirectional=bidirectional,
+        )
+
+        self.dropout = nn.Dropout(dropout)
+        self.out_dim = gru_hidden * (2 if bidirectional else 1)
+
+    def forward(self, inputs: torch.Tensor) -> torch.Tensor:
+        # inputs: (T, N, num_features)
+        T, N, F = inputs.shape
+
+        # (T, N, F) -> (N, F, T) for Conv1d
+        x = inputs.permute(1, 2, 0)
+        x = self.conv_net(x)  # (N, C_out, T)
+
+        # (N, C_out, T) -> (T, N, C_out) for GRU
+        x = x.permute(2, 0, 1)
+
+        # GRU -> (T, N, out_dim)
+        x, _ = self.gru(x)
+        x = self.dropout(x)
+        return x

@@ -31,6 +31,7 @@ callbacks:
     mode: ${monitor_mode}
     save_last: True
     verbose: True
+    
 
 dataset:
   root: ${hydra:runtime.cwd}/data

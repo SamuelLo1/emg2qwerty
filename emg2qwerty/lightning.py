@@ -27,6 +27,7 @@ from emg2qwerty.modules import (
     TDSConvEncoder,
     Conv1DBiLSTMEncoder,
     Conv1DTransformerEncoder,
+    Conv1DGRUEncoder,
 )
 from emg2qwerty.transforms import Transform
 
@@ -158,13 +159,12 @@ class TDSConvCTCModule(pl.LightningModule):
 
         num_features = self.NUM_BANDS * mlp_features[-1]
 
-        # Conv + Transformer encoder settings
+        # Conv + GRU encoder settings
         conv_channels = (128, 128)
         conv_kernel = 3
-        d_model = 256
-        nhead = 8
-        num_layers = 4
-        dim_feedforward = 1024
+        gru_hidden = 256
+        gru_layers = 3
+        bidirectional = True
         dropout = 0.1
 
         self.model = nn.Sequential(
@@ -175,17 +175,16 @@ class TDSConvCTCModule(pl.LightningModule):
                 num_bands=self.NUM_BANDS,
             ),
             nn.Flatten(start_dim=2),  # -> (T, N, num_features)
-            Conv1DTransformerEncoder(
+            Conv1DGRUEncoder(
                 num_features=num_features,
                 conv_channels=conv_channels,
                 kernel_size=conv_kernel,
-                d_model=d_model,
-                nhead=nhead,
-                num_layers=num_layers,
-                dim_feedforward=dim_feedforward,
+                gru_hidden=gru_hidden,
+                gru_layers=gru_layers,
+                bidirectional=bidirectional,
                 dropout=dropout,
             ),
-            nn.Linear(d_model, charset().num_classes),
+            nn.Linear(gru_hidden * (2 if bidirectional else 1), charset().num_classes),
             nn.LogSoftmax(dim=-1),
         )
 
