@@ -45,7 +45,6 @@ specaug:
 transforms:
   train:
     - ${to_tensor}
-    - ${bandpass}
     - ${band_rotation}
     - ${temporal_jitter}
     - ${zscore}
