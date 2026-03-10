@@ -10,7 +10,7 @@ from typing import Any, TypeVar
 
 import numpy as np
 import torch
-import torchaudio
+import torchaudio as AF
 
 
 TTransformIn = TypeVar("TTransformIn")
