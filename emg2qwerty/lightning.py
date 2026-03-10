@@ -207,10 +207,16 @@ class TDSConvCTCModule(pl.LightningModule):
                 num_bands=self.NUM_BANDS,
             ),
             nn.Flatten(start_dim=2),  # -> (T, N, num_features)
-            first_encoder,
-            second_encoder,
-            third_encoder,
-            nn.Linear(second_encoder.out_dim, charset().num_classes),
+            Conv1DGRUEncoder(
+                num_features=num_features,
+                conv_channels=conv_channels,
+                kernel_size=conv_kernel,
+                gru_hidden=gru_hidden,
+                gru_layers=gru_layers,
+                bidirectional=bidirectional,
+                dropout=dropout,
+            ),
+            nn.Linear(gru_hidden * (2 if bidirectional else 1), charset().num_classes),
             nn.LogSoftmax(dim=-1),
         )
 
