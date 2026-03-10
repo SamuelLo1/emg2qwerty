@@ -54,7 +54,6 @@ transforms:
 
   val:
     - ${to_tensor}
-    - ${bandpass}
     - ${zscore}
     - ${logspec}
 
