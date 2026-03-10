@@ -243,3 +243,87 @@ class SpecAugment:
 
         # (..., C, freq, T) -> (T, ..., C, freq)
         return x.movedim(-1, 0)
+    
+
+@dataclass
+class BandpassFilter:
+    """Applies a Butterworth-like IIR bandpass using cascaded biquads
+    (high-pass then low-pass) along the time axis.
+
+    Input shape must be (T, ...), where T is time.
+
+    Args:
+        sample_rate (int): Signal sampling rate in Hz.
+        low_cut_hz (float): High-pass cutoff frequency in Hz.
+        high_cut_hz (float): Low-pass cutoff frequency in Hz.
+        order (int): Number of cascaded biquad stages for each filter.
+            Higher values make the roll-off steeper. (default: 2)
+    """
+
+    sample_rate: int = 2000
+    low_cut_hz: float = 20.0
+    high_cut_hz: float = 450.0
+    order: int = 2
+
+    def __post_init__(self) -> None:
+        assert self.sample_rate > 0
+        assert 0.0 < self.low_cut_hz < self.high_cut_hz
+        assert self.high_cut_hz < self.sample_rate / 2
+        assert self.order >= 1
+
+    def __call__(self, tensor: torch.Tensor) -> torch.Tensor:
+        # (T, ...) -> (..., T)
+        x = tensor.movedim(0, -1)
+
+        for _ in range(self.order):
+            x = AF.highpass_biquad(
+                x, sample_rate=self.sample_rate, cutoff_freq=self.low_cut_hz
+            )
+            x = AF.lowpass_biquad(
+                x, sample_rate=self.sample_rate, cutoff_freq=self.high_cut_hz
+            )
+
+        # (..., T) -> (T, ...)
+        return x.movedim(-1, 0)
+
+
+@dataclass
+class ZScoreNormalize:
+    """Applies z-score normalization: (x - mean) / (std + eps).
+
+    Args:
+        dim (int | tuple[int, ...]): Dimension(s) over which to compute
+            mean/std. Default normalizes over time only.
+        eps (float): Numerical stability term.
+    """
+
+    dim: int | tuple[int, ...] = 0
+    eps: float = 1e-6
+
+    def __call__(self, tensor: torch.Tensor) -> torch.Tensor:
+        mean = tensor.mean(dim=self.dim, keepdim=True)
+        std = tensor.std(dim=self.dim, keepdim=True, unbiased=False)
+        return (tensor - mean) / (std + self.eps)
+
+
+@dataclass
+class AdditiveGaussianNoise:
+    """Injects additive Gaussian noise.
+
+    Args:
+        std (float): Noise standard deviation.
+        p (float): Probability of applying noise per call.
+    """
+
+    std: float = 0.01
+    p: float = 1.0
+
+    def __post_init__(self) -> None:
+        assert self.std >= 0.0
+        assert 0.0 <= self.p <= 1.0
+
+    def __call__(self, tensor: torch.Tensor) -> torch.Tensor:
+        if self.std == 0.0 or np.random.rand() > self.p:
+            return tensor
+        return tensor + torch.randn_like(tensor) * self.std
+
