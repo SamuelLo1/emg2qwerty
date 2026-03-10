@@ -350,3 +350,127 @@ class Conv1DBiLSTMEncoder(nn.Module):
 
         x = self.dropout(x)
         return x
+
+
+class PositionalEncoding(nn.Module):
+    def __init__(self, d_model: int, max_len: int = 10000) -> None:
+        super().__init__()
+        pe = torch.zeros(max_len, d_model)
+        position = torch.arange(0, max_len, dtype=torch.float).unsqueeze(1)
+        div_term = torch.exp(
+            torch.arange(0, d_model, 2).float() * (-torch.log(torch.tensor(10000.0)) / d_model)
+        )
+        pe[:, 0::2] = torch.sin(position * div_term)
+        pe[:, 1::2] = torch.cos(position * div_term)
+        self.register_buffer("pe", pe)  # (max_len, d_model)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # x: (T, N, d_model)
+        T = x.shape[0]
+        return x + self.pe[:T].unsqueeze(1)
+
+
+class TimeSeriesTransformerEncoder(nn.Module):
+    """An encoder-only Transformer for temporal EMG sequences.
+
+    Inputs: (T, N, num_features) -> Outputs: (T, N, d_model)
+
+    Notes:
+    - This implementation does NOT downsample the time dimension. If you
+      add subsampling, remember to update emission length handling in
+      `TDSConvCTCModule._step`.
+    """
+
+    def __init__(
+        self,
+        num_features: int,
+        d_model: int = 256,
+        nhead: int = 8,
+        num_layers: int = 4,
+        dim_feedforward: int = 1024,
+        dropout: float = 0.1,
+        max_len: int = 10000,
+    ) -> None:
+        super().__init__()
+        self.input_proj = nn.Linear(num_features, d_model)
+        self.pos_enc = PositionalEncoding(d_model, max_len=max_len)
+
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=d_model,
+            nhead=nhead,
+            dim_feedforward=dim_feedforward,
+            dropout=dropout,
+            activation="relu",
+        )
+        self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
+        self.dropout = nn.Dropout(dropout)
+
+    def forward(self, inputs: torch.Tensor) -> torch.Tensor:
+        # inputs: (T, N, num_features)
+        x = self.input_proj(inputs)  # (T, N, d_model)
+        x = self.pos_enc(x)
+        x = self.transformer(x)  # (T, N, d_model)
+        x = self.dropout(x)
+        return x
+
+
+class Conv1DTransformerEncoder(nn.Module):
+    """A small Conv1D frontend followed by a Transformer encoder.
+
+    Inputs: (T, N, num_features) -> Outputs: (T, N, d_model)
+    """
+
+    def __init__(
+        self,
+        num_features: int,
+        conv_channels: Sequence[int] = (128, 128),
+        kernel_size: int = 3,
+        d_model: int = 256,
+        nhead: int = 8,
+        num_layers: int = 4,
+        dim_feedforward: int = 1024,
+        dropout: float = 0.1,
+        max_len: int = 10000,
+    ) -> None:
+        super().__init__()
+
+        assert len(conv_channels) > 0
+        layers: list[nn.Module] = []
+        in_ch = num_features
+        for out_ch in conv_channels:
+            layers.extend(
+                [
+                    nn.Conv1d(in_ch, out_ch, kernel_size, padding=kernel_size // 2),
+                    nn.ReLU(),
+                    nn.BatchNorm1d(out_ch),
+                ]
+            )
+            in_ch = out_ch
+
+        self.conv_net = nn.Sequential(*layers)
+
+        # Reuse the TimeSeriesTransformerEncoder for the transformer stack
+        self.transformer = TimeSeriesTransformerEncoder(
+            num_features=in_ch,
+            d_model=d_model,
+            nhead=nhead,
+            num_layers=num_layers,
+            dim_feedforward=dim_feedforward,
+            dropout=dropout,
+            max_len=max_len,
+        )
+
+    def forward(self, inputs: torch.Tensor) -> torch.Tensor:
+        # inputs: (T, N, num_features)
+        T, N, F = inputs.shape
+
+        # (T, N, F) -> (N, F, T) for Conv1d
+        x = inputs.permute(1, 2, 0)
+        x = self.conv_net(x)  # (N, C_out, T)
+
+        # (N, C_out, T) -> (T, N, C_out) for transformer
+        x = x.permute(2, 0, 1)
+
+        # Transformer expects (T, N, C)
+        x = self.transformer(x)  # (T, N, d_model)
+        return x

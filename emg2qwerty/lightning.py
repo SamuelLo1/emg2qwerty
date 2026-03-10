@@ -25,7 +25,8 @@ from emg2qwerty.modules import (
     MultiBandRotationInvariantMLP,
     SpectrogramNorm,
     TDSConvEncoder,
-    Conv1DBiLSTMEncoder
+    Conv1DBiLSTMEncoder,
+    Conv1DTransformerEncoder,
 )
 from emg2qwerty.transforms import Transform
 
@@ -156,10 +157,14 @@ class TDSConvCTCModule(pl.LightningModule):
         self.save_hyperparameters()
 
         num_features = self.NUM_BANDS * mlp_features[-1]
-        lstm_hidden = 256
-        lstm_layers = 2
+
+        # Conv + Transformer encoder settings
         conv_channels = (128, 128)
         conv_kernel = 3
+        d_model = 256
+        nhead = 8
+        num_layers = 4
+        dim_feedforward = 1024
         dropout = 0.1
 
         self.model = nn.Sequential(
@@ -169,16 +174,18 @@ class TDSConvCTCModule(pl.LightningModule):
                 mlp_features=mlp_features,
                 num_bands=self.NUM_BANDS,
             ),
-            nn.Flatten(start_dim=2),
-            Conv1DBiLSTMEncoder(
+            nn.Flatten(start_dim=2),  # -> (T, N, num_features)
+            Conv1DTransformerEncoder(
                 num_features=num_features,
                 conv_channels=conv_channels,
                 kernel_size=conv_kernel,
-                lstm_hidden=lstm_hidden,
-                lstm_layers=lstm_layers,
+                d_model=d_model,
+                nhead=nhead,
+                num_layers=num_layers,
+                dim_feedforward=dim_feedforward,
                 dropout=dropout,
             ),
-            nn.Linear(lstm_hidden * 2, charset().num_classes),
+            nn.Linear(d_model, charset().num_classes),
             nn.LogSoftmax(dim=-1),
         )
 
