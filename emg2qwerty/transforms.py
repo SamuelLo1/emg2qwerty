@@ -284,14 +284,24 @@ class ZScoreNormalize:
         eps (float): Numerical stability term.
     """
 
-    dim: int | tuple[int, ...] = 0
+    dim: Any = 0
     eps: float = 1e-6
+
+    def __post_init__(self) -> None:
+        # Normalize dim to int or tuple[int, ...] to avoid OmegaConf union types
+        if isinstance(self.dim, (list, tuple)):
+            self.dim = tuple(int(d) for d in self.dim)
+        elif isinstance(self.dim, (int, np.integer)):
+            self.dim = int(self.dim)
+        else:
+            raise TypeError(f"ZScoreNormalize.dim must be int or sequence of ints, got {type(self.dim)}")
+
+        assert self.eps >= 0.0
 
     def __call__(self, tensor: torch.Tensor) -> torch.Tensor:
         mean = tensor.mean(dim=self.dim, keepdim=True)
         std = tensor.std(dim=self.dim, keepdim=True, unbiased=False)
         return (tensor - mean) / (std + self.eps)
-
 
 @dataclass
 class AdditiveGaussianNoise:
