@@ -22,6 +22,7 @@ import random
 import shlex
 import subprocess
 import re
+import os
 from dataclasses import asdict, dataclass
 from typing import Any, Dict, List, Sequence
 
@@ -41,6 +42,32 @@ from emg2qwerty.modules import (
 )
 
 from torch.utils.data import Subset
+
+
+def _run_and_stream(cmd: List[str], log_path: str) -> tuple[int, str]:
+	"""Run `cmd` as subprocess, stream combined stdout/stderr to console,
+	write full output to `log_path`, and return (returncode, full_stdout).
+	"""
+	env = os.environ.copy()
+	env.setdefault("PYTHONUNBUFFERED", "1")
+
+	with open(log_path, "w") as lf:
+		proc = subprocess.Popen(
+			cmd,
+			stdout=subprocess.PIPE,
+			stderr=subprocess.STDOUT,
+			text=True,
+			bufsize=1,
+			env=env,
+		)
+		out_lines: List[str] = []
+		if proc.stdout is not None:
+			for line in proc.stdout:
+				print(line, end="")
+				lf.write(line)
+				out_lines.append(line)
+		proc.wait()
+	return proc.returncode, "".join(out_lines)
 
 
 @dataclass
@@ -300,11 +327,13 @@ def run_trials(
 		overrides = [o.replace("{TRAIN_FRACTION}", str(train_fraction)) for o in overrides]
 		cmd = ["python", "-m", "emg2qwerty.train"] + overrides
 		print(f"  initial run cmd: {' '.join(shlex.quote(c) for c in cmd)}")
-		proc = subprocess.run(cmd, capture_output=True, text=True)
+		# Stream subprocess output live to console and write to a log file
+		log_path = f"tuning_stdout_trial_{i}_initial.log"
+		retcode, full_out = _run_and_stream(cmd, log_path)
 
-		res_item: Dict[str, Any] = {"config": asdict(cfg), "initial_returncode": proc.returncode}
-		res_item["initial_stdout"] = proc.stdout[-10000:]
-		res_item["initial_stderr"] = proc.stderr[-10000:]
+		res_item: Dict[str, Any] = {"config": asdict(cfg), "initial_returncode": retcode}
+		res_item["initial_stdout"] = full_out[-10000:]
+		res_item["initial_stderr"] = ""
 
 		# Try to parse results from initial run
 		parsed = None
@@ -349,11 +378,12 @@ def run_trials(
 
 			cmd2 = ["python", "-m", "emg2qwerty.train"] + overrides2
 			print(f"  continuing run cmd: {' '.join(shlex.quote(c) for c in cmd2)}")
-			proc2 = subprocess.run(cmd2, capture_output=True, text=True)
+			log_path2 = f"tuning_stdout_trial_{i}_final.log"
+			retcode2, full_out2 = _run_and_stream(cmd2, log_path2)
 
-			res_item["final_returncode"] = proc2.returncode
-			res_item["final_stdout"] = proc2.stdout[-10000:]
-			res_item["final_stderr"] = proc2.stderr[-10000:]
+			res_item["final_returncode"] = retcode2
+			res_item["final_stdout"] = full_out2[-10000:]
+			res_item["final_stderr"] = ""
 
 			# parse final results
 			try:
