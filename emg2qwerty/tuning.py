@@ -224,8 +224,8 @@ def _build_override_for_config(cfg: Config, epochs: int) -> List[str]:
 		f"module.kernel_size={cfg.kernel_size}",
 		f"module.pool_size={cfg.pool_size}",
 		f"trainer.max_epochs={epochs}",
-		# Use our subsampled datamodule so we can control fraction of training data
-		f"datamodule._target_=emg2qwerty.tuning.SubsampledWindowedEMGDataModule",
+		# Use the subsampled datamodule config so `datamodule.train_fraction` exists
+		"datamodule=subsampled_windowed",
 		f"datamodule.train_fraction={{TRAIN_FRACTION}}",
 		"train=True",
 		"trainer.accelerator=cpu",

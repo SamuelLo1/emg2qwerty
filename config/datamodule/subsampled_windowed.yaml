@@ -1,0 +1,8 @@
+# @package _global_
+datamodule:
+  _target_: emg2qwerty.tuning.SubsampledWindowedEMGDataModule
+  window_length: 8000
+  padding: [1800, 200]
+  batch_size: ${...:batch_size}
+  num_workers: ${...:num_workers}
+  train_fraction: 1.0
