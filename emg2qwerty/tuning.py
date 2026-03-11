@@ -333,10 +333,89 @@ def _run_in_process(overrides: List[str], log_path: str) -> tuple[int, str]:
 			cfg = compose(config_name="base", overrides=overrides)
 			buf = io.StringIO()
 			with open(log_path, "w") as lf, redirect_stdout(buf), redirect_stderr(buf):
-				# Call the original, undecorated main function with the composed cfg
-				train.main.__wrapped__(cfg)
-				full_out = buf.getvalue()
-				lf.write(full_out)
+				# Replicate the important parts of train.main here to avoid
+				# relying on Hydra runtime helpers (get_original_cwd, hydra main wrapper).
+				try:
+					pl.seed_everything(cfg.seed, workers=True)
+
+					def _full_session_paths(dataset):
+						sessions = [session["session"] for session in dataset]
+						return [Path(cfg.dataset.root).joinpath(f"{session}.hdf5") for session in sessions]
+
+					def _build_transform(configs):
+						from emg2qwerty import transforms as _transforms
+
+						return _transforms.Compose([instantiate(c) for c in configs])
+
+					# Instantiate module
+					module = instantiate(
+						cfg.module,
+						optimizer=cfg.get("optimizer", None),
+						lr_scheduler=cfg.get("lr_scheduler", None),
+						decoder=cfg.get("decoder", None),
+						_recursive_=False,
+					)
+					if cfg.get("checkpoint", None) is not None:
+						module = module.load_from_checkpoint(
+							cfg.checkpoint,
+							optimizer=cfg.get("optimizer", None),
+							lr_scheduler=cfg.get("lr_scheduler", None),
+							decoder=cfg.get("decoder", None),
+						)
+
+					# Instantiate datamodule
+					datamodule = instantiate(
+						cfg.datamodule,
+						batch_size=cfg.batch_size,
+						num_workers=cfg.num_workers,
+						train_sessions=_full_session_paths(cfg.dataset.train),
+						val_sessions=_full_session_paths(cfg.dataset.val),
+						test_sessions=_full_session_paths(cfg.dataset.test),
+						train_transform=_build_transform(cfg.transforms.train),
+						val_transform=_build_transform(cfg.transforms.val),
+						test_transform=_build_transform(cfg.transforms.test),
+						_convert_="object",
+					)
+
+					# Callbacks
+					callback_configs = cfg.get("callbacks", [])
+					callbacks = [instantiate(c) for c in callback_configs]
+
+					trainer = pl.Trainer(
+						**OmegaConf.to_container(cfg.trainer, resolve=True),
+						callbacks=callbacks,
+					)
+
+					if cfg.get("train", False):
+						checkpoint_dir = Path.cwd().joinpath("checkpoints")
+						resume_from_checkpoint = utils.get_last_checkpoint(checkpoint_dir)
+						if resume_from_checkpoint is not None:
+							print(f"Resuming training from checkpoint {resume_from_checkpoint}")
+
+						trainer.fit(module, datamodule, ckpt_path=resume_from_checkpoint)
+
+						# Load best checkpoint if available
+						try:
+							module = module.load_from_checkpoint(trainer.checkpoint_callback.best_model_path)
+						except Exception:
+							pass
+
+					val_metrics = trainer.validate(module, datamodule)
+					test_metrics = trainer.test(module, datamodule)
+
+					results = {
+						"val_metrics": val_metrics,
+						"test_metrics": test_metrics,
+						"best_checkpoint": getattr(trainer.checkpoint_callback, "best_model_path", None),
+					}
+					import pprint
+
+					pprint.pprint(results, sort_dicts=False)
+				except Exception:
+					raise
+				finally:
+					full_out = buf.getvalue()
+					lf.write(full_out)
 			return 0, full_out
 	except Exception as exc:
 		# capture whatever was written to buffer and append exception
