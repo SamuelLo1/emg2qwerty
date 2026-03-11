@@ -1,0 +1,13 @@
+# @package _global_
+module:
+  _target_: emg2qwerty.tuning.SimpleConvCTCModule
+  in_features: 528  # freq * channels
+  mlp_features: [384]
+  conv_channels: [64, 128]
+  kernel_size: 3
+  pool_size: 0
+
+datamodule:
+  _target_: emg2qwerty.lightning.WindowedEMGDataModule
+  window_length: 8000
+  padding: [1800, 200]

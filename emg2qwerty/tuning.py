@@ -216,7 +216,8 @@ def _build_override_for_config(cfg: Config, epochs: int) -> List[str]:
 	conv_channels = [cfg.base_filters * (2**i) for i in range(cfg.num_conv_layers)]
 	conv_channels_str = ",".join(str(x) for x in conv_channels)
 	overrides = [
-		f"module._target_=emg2qwerty.tuning.SimpleConvCTCModule",
+		# Use a dedicated Hydra model config that exposes CNN params
+		"model=cnn_conv_ctc",
 		f"module.in_features=528",
 		f"module.mlp_features=[384]",
 		f"module.conv_channels=[{conv_channels_str}]",
