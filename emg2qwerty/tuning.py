@@ -46,7 +46,7 @@ from emg2qwerty.metrics import CharacterErrorRates
 from torchmetrics import MetricCollection
 
 from torch.utils.data import Subset
-from hydra import initialize, compose
+from hydra import initialize, compose, initialize_config_dir
 from contextlib import redirect_stdout, redirect_stderr
 from omegaconf import OmegaConf
 import emg2qwerty.train as train
@@ -329,7 +329,7 @@ def _run_in_process(overrides: List[str], log_path: str) -> tuple[int, str]:
 	full_out = ""
 	# Hydra initialize/compose in a context so it's cleaned up after the call
 	try:
-		with initialize(config_path=str(config_dir), job_name="tuning"):
+		with initialize_config_dir(config_dir=str(config_dir), job_name="tuning"):
 			cfg = compose(config_name="base", overrides=overrides)
 			buf = io.StringIO()
 			with open(log_path, "w") as lf, redirect_stdout(buf), redirect_stderr(buf):
