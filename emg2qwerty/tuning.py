@@ -21,6 +21,7 @@ import json
 import random
 import shlex
 import subprocess
+import re
 from dataclasses import asdict, dataclass
 from typing import Any, Dict, List, Sequence
 
@@ -306,16 +307,26 @@ def run_trials(
 
 		# Try to parse results from initial run
 		parsed = None
+		# Try to extract a printed Python dict that contains 'val_metrics'
 		try:
-			idx = proc.stdout.rfind("\n{")
-			if idx == -1:
-				idx = proc.stdout.rfind("{\'val_metrics'")
-			if idx != -1:
-				tail = proc.stdout[idx:].strip()
+			m = re.search(r"\{.*'val_metrics'.*\}", proc.stdout, flags=re.S)
+			if m:
+				tail = m.group(0)
 				parsed = ast.literal_eval(tail)
 				res_item["initial_results"] = parsed
+			else:
+				# fallback: write full stdout to help debugging
+				log_path = f"tuning_stdout_trial_{i}_initial.log"
+				with open(log_path, "w") as lf:
+					lf.write(proc.stdout)
+				res_item["initial_results_parse_error"] = True
+				res_item["initial_stdout_log"] = log_path
 		except Exception:
 			res_item["initial_results_parse_error"] = True
+			log_path = f"tuning_stdout_trial_{i}_initial.log"
+			with open(log_path, "w") as lf:
+				lf.write(proc.stdout)
+			res_item["initial_stdout_log"] = log_path
 
 		val_cer = _extract_val_cer(parsed) if parsed is not None else None
 		res_item["initial_val_cer"] = val_cer
@@ -345,19 +356,26 @@ def run_trials(
 
 			# parse final results
 			try:
-				idx = proc2.stdout.rfind("\n{")
-				if idx == -1:
-					idx = proc2.stdout.rfind("{\'val_metrics'")
-				if idx != -1:
-					tail = proc2.stdout[idx:].strip()
-					parsed2 = ast.literal_eval(tail)
+				m2 = re.search(r"\{.*'val_metrics'.*\}", proc2.stdout, flags=re.S)
+				if m2:
+					parsed2 = ast.literal_eval(m2.group(0))
 					res_item["final_results"] = parsed2
 					# update best_cer if final is even better
 					final_val = _extract_val_cer(parsed2)
 					if final_val is not None and final_val < best_cer:
 						best_cer = final_val
+				else:
+					log_path2 = f"tuning_stdout_trial_{i}_final.log"
+					with open(log_path2, "w") as lf2:
+						lf2.write(proc2.stdout)
+					res_item["final_results_parse_error"] = True
+					res_item["final_stdout_log"] = log_path2
 			except Exception:
 				res_item["final_results_parse_error"] = True
+				log_path2 = f"tuning_stdout_trial_{i}_final.log"
+				with open(log_path2, "w") as lf2:
+					lf2.write(proc2.stdout)
+				res_item["final_stdout_log"] = log_path2
 		else:
 			print(f"  Did not improve (val_cer={val_cer}); discarding configuration")
 			res_item["discarded"] = True
