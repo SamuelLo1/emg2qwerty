@@ -27,6 +27,9 @@ from typing import Any, Dict, List, Sequence
 import pytorch_lightning as pl
 import torch
 from hydra.utils import instantiate
+from pathlib import Path
+import numpy as np
+from emg2qwerty.transforms import Transform
 
 from emg2qwerty import utils
 from emg2qwerty.charset import charset
@@ -35,6 +38,8 @@ from emg2qwerty.modules import (
 	SpectrogramNorm,
 	MultiBandRotationInvariantMLP,
 )
+
+from torch.utils.data import Subset
 
 
 @dataclass
@@ -160,6 +165,52 @@ class SimpleConvCTCModule(pl.LightningModule):
 		return torch.optim.Adam(self.parameters(), lr=1e-3)
 
 
+class SubsampledWindowedEMGDataModule(WindowedEMGDataModule):
+	"""A thin wrapper around `WindowedEMGDataModule` that subsamples the
+	training dataset to a given fraction for fast tuning runs.
+
+	Accepts the same constructor args as `WindowedEMGDataModule` plus
+	`train_fraction` (float in (0,1]).
+	"""
+
+	def __init__(
+		self,
+		window_length: int,
+		padding: tuple[int, int],
+		batch_size: int,
+		num_workers: int,
+		train_sessions: Sequence[Path],
+		val_sessions: Sequence[Path],
+		test_sessions: Sequence[Path],
+		train_transform: Transform[np.ndarray, torch.Tensor],
+		val_transform: Transform[np.ndarray, torch.Tensor],
+		test_transform: Transform[np.ndarray, torch.Tensor],
+		train_fraction: float = 1.0,
+	) -> None:
+		super().__init__(
+			window_length=window_length,
+			padding=padding,
+			batch_size=batch_size,
+			num_workers=num_workers,
+			train_sessions=train_sessions,
+			val_sessions=val_sessions,
+			test_sessions=test_sessions,
+			train_transform=train_transform,
+			val_transform=val_transform,
+			test_transform=test_transform,
+		)
+		self.train_fraction = float(train_fraction)
+
+	def setup(self, stage: str | None = None) -> None:
+		super().setup(stage)
+
+		if 0 < self.train_fraction < 1.0:
+			total = len(self.train_dataset)
+			k = max(1, int(total * self.train_fraction))
+			indices = random.sample(range(total), k=k)
+			self.train_dataset = Subset(self.train_dataset, indices)
+
+
 def _build_override_for_config(cfg: Config, epochs: int) -> List[str]:
 	conv_channels = [cfg.base_filters * (2**i) for i in range(cfg.num_conv_layers)]
 	conv_channels_str = ",".join(str(x) for x in conv_channels)
@@ -171,6 +222,9 @@ def _build_override_for_config(cfg: Config, epochs: int) -> List[str]:
 		f"module.kernel_size={cfg.kernel_size}",
 		f"module.pool_size={cfg.pool_size}",
 		f"trainer.max_epochs={epochs}",
+		# Use our subsampled datamodule so we can control fraction of training data
+		f"datamodule._target_=emg2qwerty.tuning.SubsampledWindowedEMGDataModule",
+		f"datamodule.train_fraction={{TRAIN_FRACTION}}",
 		"train=True",
 		"trainer.accelerator=cpu",
 		"trainer.devices=1",
@@ -178,7 +232,13 @@ def _build_override_for_config(cfg: Config, epochs: int) -> List[str]:
 	return overrides
 
 
-def run_trials(trials: int = 10, epochs: int = 10, seed: int = 42) -> None:
+def run_trials(
+	trials: int = 10,
+	seed: int = 42,
+	train_fraction: float = 1.0,
+	initial_epochs: int = 12,
+	max_epochs: int = 14,
+) -> None:
 	"""Run sampling trials with early stopping at 12 epochs and max 14.
 
 	For each sampled configuration we first train for 12 epochs. If the
@@ -226,14 +286,16 @@ def run_trials(trials: int = 10, epochs: int = 10, seed: int = 42) -> None:
 			return None
 		return None
 
-	initial_epochs = 12
-	max_epochs = 14
+	# Use provided epoch values
+	# initial_epochs and max_epochs are taken from function args
 
 	for i, cfg in enumerate(selected, 1):
 		print(f"Trial {i}/{trials}: {cfg}")
 
 		# 1) initial run for `initial_epochs`
 		overrides = _build_override_for_config(cfg, initial_epochs)
+		# replace placeholder with requested train_fraction
+		overrides = [o.replace("{TRAIN_FRACTION}", str(train_fraction)) for o in overrides]
 		cmd = ["python", "-m", "emg2qwerty.train"] + overrides
 		print(f"  initial run cmd: {' '.join(shlex.quote(c) for c in cmd)}")
 		proc = subprocess.run(cmd, capture_output=True, text=True)
@@ -269,6 +331,7 @@ def run_trials(trials: int = 10, epochs: int = 10, seed: int = 42) -> None:
 				checkpoint = parsed.get("best_checkpoint")
 
 			overrides2 = _build_override_for_config(cfg, max_epochs)
+			overrides2 = [o.replace("{TRAIN_FRACTION}", str(train_fraction)) for o in overrides2]
 			if checkpoint:
 				overrides2.append(f"checkpoint={checkpoint}")
 
@@ -309,10 +372,18 @@ def run_trials(trials: int = 10, epochs: int = 10, seed: int = 42) -> None:
 def _cli() -> None:
 	parser = argparse.ArgumentParser()
 	parser.add_argument("--trials", type=int, default=10)
-	parser.add_argument("--epochs", type=int, default=10)
+	parser.add_argument("--initial-epochs", type=int, default=12, help="Number of epochs for initial evaluation run")
+	parser.add_argument("--max-epochs", type=int, default=14, help="Maximum epochs to train if configuration improves")
 	parser.add_argument("--seed", type=int, default=42)
+	parser.add_argument("--train-fraction", type=float, default=1.0, help="Fraction of training data to use (0-1]")
 	args = parser.parse_args()
-	run_trials(trials=args.trials, epochs=args.epochs, seed=args.seed)
+	run_trials(
+		trials=args.trials,
+		seed=args.seed,
+		train_fraction=args.train_fraction,
+		initial_epochs=args.initial_epochs,
+		max_epochs=args.max_epochs,
+	)
 
 
 if __name__ == "__main__":
