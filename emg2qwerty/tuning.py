@@ -23,6 +23,7 @@ import shlex
 import subprocess
 import re
 import os
+import io
 from dataclasses import asdict, dataclass
 from typing import Any, Dict, List, Sequence
 
@@ -40,8 +41,15 @@ from emg2qwerty.modules import (
 	SpectrogramNorm,
 	MultiBandRotationInvariantMLP,
 )
+from emg2qwerty.data import LabelData
+from emg2qwerty.metrics import CharacterErrorRates
+from torchmetrics import MetricCollection
 
 from torch.utils.data import Subset
+from hydra import initialize, compose
+from contextlib import redirect_stdout, redirect_stderr
+from omegaconf import OmegaConf
+import emg2qwerty.train as train
 
 
 def _run_and_stream(cmd: List[str], log_path: str) -> tuple[int, str]:
@@ -141,6 +149,15 @@ class SimpleConvCTCModule(pl.LightningModule):
 		self.ctc_loss = torch.nn.CTCLoss(blank=charset().null_class)
 		self.decoder = instantiate(decoder) if decoder is not None else None
 
+		# Metrics
+		metrics = MetricCollection([CharacterErrorRates()])
+		self.metrics = torch.nn.ModuleDict(
+			{
+				f"{phase}_metrics": metrics.clone(prefix=f"{phase}/")
+				for phase in ["train", "val", "test"]
+			}
+		)
+
 	def forward(self, inputs: torch.Tensor) -> torch.Tensor:
 		x = self.model(inputs)
 		# x: (T, N, num_features) -> to (N, C_in, T) for conv
@@ -171,8 +188,31 @@ class SimpleConvCTCModule(pl.LightningModule):
 			target_lengths=target_lengths,
 		)
 
+
+		# Decode emissions (if decoder provided)
+		predictions = []
+		if self.decoder is not None:
+			predictions = self.decoder.decode_batch(
+				emissions=emissions.detach().cpu().numpy(),
+				emission_lengths=emission_lengths.detach().cpu().numpy(),
+			)
+
+		# Update metrics
+		metrics = self.metrics[f"{phase}_metrics"]
+		if predictions:
+			targets_np = targets.detach().cpu().numpy()
+			target_lengths_np = target_lengths.detach().cpu().numpy()
+			for i in range(len(target_lengths_np)):
+				target = LabelData.from_labels(targets_np[: target_lengths_np[i], i])
+				metrics.update(prediction=predictions[i], target=target)
+
 		self.log(f"{phase}/loss", loss, batch_size=len(input_lengths), sync_dist=False)
 		return loss
+
+	def _epoch_end(self, phase: str) -> None:
+		metrics = self.metrics[f"{phase}_metrics"]
+		self.log_dict(metrics.compute(), sync_dist=False)
+		metrics.reset()
 
 	def training_step(self, batch, batch_idx):
 		return self._step("train", batch)
@@ -182,6 +222,15 @@ class SimpleConvCTCModule(pl.LightningModule):
 
 	def test_step(self, batch, batch_idx):
 		return self._step("test", batch)
+
+	def on_train_epoch_end(self) -> None:
+		self._epoch_end("train")
+
+	def on_validation_epoch_end(self) -> None:
+		self._epoch_end("val")
+
+	def on_test_epoch_end(self) -> None:
+		self._epoch_end("test")
 
 	def configure_optimizers(self):
 		# If hydra supplied optimizer/lr_scheduler configs, prefer the utils helper
@@ -239,7 +288,7 @@ class SubsampledWindowedEMGDataModule(WindowedEMGDataModule):
 			self.train_dataset = Subset(self.train_dataset, indices)
 
 
-def _build_override_for_config(cfg: Config, epochs: int) -> List[str]:
+def _build_override_for_config(cfg: Config, epochs: int, limit_train_batches: float | None = None) -> List[str]:
 	conv_channels = [cfg.base_filters * (2**i) for i in range(cfg.num_conv_layers)]
 	conv_channels_str = ",".join(str(x) for x in conv_channels)
 	overrides = [
@@ -258,7 +307,48 @@ def _build_override_for_config(cfg: Config, epochs: int) -> List[str]:
 		"trainer.accelerator=cpu",
 		"trainer.devices=1",
 	]
+	if limit_train_batches is not None:
+		overrides.append(f"trainer.limit_train_batches={limit_train_batches}")
 	return overrides
+
+
+def _run_in_process(overrides: List[str], log_path: str) -> tuple[int, str]:
+	"""Compose a Hydra config in-process and call the training `main` directly.
+
+	This avoids spawning a subprocess which reduces overhead for many short
+	runs. The function captures stdout/stderr and writes a combined log file.
+	Returns (returncode, full_output).
+	"""
+	# Register resolver used by train.main if not already present
+	try:
+		OmegaConf.register_new_resolver("cpus_per_task", utils.cpus_per_task)
+	except Exception:
+		pass
+
+	config_dir = Path(__file__).resolve().parents[1].joinpath("config")
+	full_out = ""
+	# Hydra initialize/compose in a context so it's cleaned up after the call
+	try:
+		with initialize(config_path=str(config_dir), job_name="tuning"):
+			cfg = compose(config_name="base", overrides=overrides)
+			buf = io.StringIO()
+			with open(log_path, "w") as lf, redirect_stdout(buf), redirect_stderr(buf):
+				# Call the original, undecorated main function with the composed cfg
+				train.main.__wrapped__(cfg)
+				full_out = buf.getvalue()
+				lf.write(full_out)
+			return 0, full_out
+	except Exception as exc:
+		# capture whatever was written to buffer and append exception
+		try:
+			full_out = buf.getvalue()
+		except Exception:
+			full_out = ""
+		full_out = full_out + f"\nException during in-process run: {exc}\n"
+		with open(log_path, "w") as lf:
+			lf.write(full_out)
+		return 1, full_out
+
 
 
 def run_trials(
@@ -267,6 +357,8 @@ def run_trials(
 	train_fraction: float = 1.0,
 	initial_epochs: int = 12,
 	max_epochs: int = 14,
+	in_process: bool = True,
+	limit_train_batches: float | None = None,
 ) -> None:
 	"""Run sampling trials with early stopping at 12 epochs and max 14.
 
@@ -322,14 +414,19 @@ def run_trials(
 		print(f"Trial {i}/{trials}: {cfg}")
 
 		# 1) initial run for `initial_epochs`
-		overrides = _build_override_for_config(cfg, initial_epochs)
+		overrides = _build_override_for_config(cfg, initial_epochs, limit_train_batches)
 		# replace placeholder with requested train_fraction
 		overrides = [o.replace("{TRAIN_FRACTION}", str(train_fraction)) for o in overrides]
-		cmd = ["python", "-m", "emg2qwerty.train"] + overrides
-		print(f"  initial run cmd: {' '.join(shlex.quote(c) for c in cmd)}")
-		# Stream subprocess output live to console and write to a log file
-		log_path = f"tuning_stdout_trial_{i}_initial.log"
-		retcode, full_out = _run_and_stream(cmd, log_path)
+		if in_process:
+			print("  running initial run in-process")
+			log_path = f"tuning_stdout_trial_{i}_initial.log"
+			retcode, full_out = _run_in_process(overrides, log_path)
+		else:
+			cmd = ["python", "-m", "emg2qwerty.train"] + overrides
+			print(f"  initial run cmd: {' '.join(shlex.quote(c) for c in cmd)}")
+			# Stream subprocess output live to console and write to a log file
+			log_path = f"tuning_stdout_trial_{i}_initial.log"
+			retcode, full_out = _run_and_stream(cmd, log_path)
 
 		res_item: Dict[str, Any] = {"config": asdict(cfg), "initial_returncode": retcode}
 		res_item["initial_stdout"] = full_out[-10000:]
@@ -339,23 +436,17 @@ def run_trials(
 		parsed = None
 		# Try to extract a printed Python dict that contains 'val_metrics'
 		try:
-			m = re.search(r"\{.*'val_metrics'.*\}", proc.stdout, flags=re.S)
+			m = re.search(r"\{.*'val_metrics'.*\}", full_out, flags=re.S)
 			if m:
 				tail = m.group(0)
 				parsed = ast.literal_eval(tail)
 				res_item["initial_results"] = parsed
 			else:
-				# fallback: write full stdout to help debugging
-				log_path = f"tuning_stdout_trial_{i}_initial.log"
-				with open(log_path, "w") as lf:
-					lf.write(proc.stdout)
+				# fallback: ensure the captured log file exists (already written by _run_and_stream)
 				res_item["initial_results_parse_error"] = True
 				res_item["initial_stdout_log"] = log_path
 		except Exception:
 			res_item["initial_results_parse_error"] = True
-			log_path = f"tuning_stdout_trial_{i}_initial.log"
-			with open(log_path, "w") as lf:
-				lf.write(proc.stdout)
 			res_item["initial_stdout_log"] = log_path
 
 		val_cer = _extract_val_cer(parsed) if parsed is not None else None
@@ -371,15 +462,19 @@ def run_trials(
 			if parsed is not None:
 				checkpoint = parsed.get("best_checkpoint")
 
-			overrides2 = _build_override_for_config(cfg, max_epochs)
+			overrides2 = _build_override_for_config(cfg, max_epochs, limit_train_batches)
 			overrides2 = [o.replace("{TRAIN_FRACTION}", str(train_fraction)) for o in overrides2]
 			if checkpoint:
 				overrides2.append(f"checkpoint={checkpoint}")
-
-			cmd2 = ["python", "-m", "emg2qwerty.train"] + overrides2
-			print(f"  continuing run cmd: {' '.join(shlex.quote(c) for c in cmd2)}")
-			log_path2 = f"tuning_stdout_trial_{i}_final.log"
-			retcode2, full_out2 = _run_and_stream(cmd2, log_path2)
+			if in_process:
+				print("  continuing run in-process")
+				log_path2 = f"tuning_stdout_trial_{i}_final.log"
+				retcode2, full_out2 = _run_in_process(overrides2, log_path2)
+			else:
+				cmd2 = ["python", "-m", "emg2qwerty.train"] + overrides2
+				print(f"  continuing run cmd: {' '.join(shlex.quote(c) for c in cmd2)}")
+				log_path2 = f"tuning_stdout_trial_{i}_final.log"
+				retcode2, full_out2 = _run_and_stream(cmd2, log_path2)
 
 			res_item["final_returncode"] = retcode2
 			res_item["final_stdout"] = full_out2[-10000:]
@@ -387,7 +482,7 @@ def run_trials(
 
 			# parse final results
 			try:
-				m2 = re.search(r"\{.*'val_metrics'.*\}", proc2.stdout, flags=re.S)
+				m2 = re.search(r"\{.*'val_metrics'.*\}", full_out2, flags=re.S)
 				if m2:
 					parsed2 = ast.literal_eval(m2.group(0))
 					res_item["final_results"] = parsed2
@@ -396,16 +491,10 @@ def run_trials(
 					if final_val is not None and final_val < best_cer:
 						best_cer = final_val
 				else:
-					log_path2 = f"tuning_stdout_trial_{i}_final.log"
-					with open(log_path2, "w") as lf2:
-						lf2.write(proc2.stdout)
 					res_item["final_results_parse_error"] = True
 					res_item["final_stdout_log"] = log_path2
 			except Exception:
 				res_item["final_results_parse_error"] = True
-				log_path2 = f"tuning_stdout_trial_{i}_final.log"
-				with open(log_path2, "w") as lf2:
-					lf2.write(proc2.stdout)
 				res_item["final_stdout_log"] = log_path2
 		else:
 			print(f"  Did not improve (val_cer={val_cer}); discarding configuration")
@@ -425,6 +514,9 @@ def _cli() -> None:
 	parser.add_argument("--max-epochs", type=int, default=14, help="Maximum epochs to train if configuration improves")
 	parser.add_argument("--seed", type=int, default=42)
 	parser.add_argument("--train-fraction", type=float, default=1.0, help="Fraction of training data to use (0-1]")
+	parser.set_defaults(in_process=True)
+	parser.add_argument("--no-in-process", dest="in_process", action="store_false", help="Disable in-process training (use subprocess) to match prior behavior")
+	parser.add_argument("--limit-train-batches", type=float, default=None, help="Optional trainer.limit_train_batches override (0-1 fractional or int)")
 	args = parser.parse_args()
 	run_trials(
 		trials=args.trials,
@@ -432,6 +524,8 @@ def _cli() -> None:
 		train_fraction=args.train_fraction,
 		initial_epochs=args.initial_epochs,
 		max_epochs=args.max_epochs,
+		in_process=args.in_process,
+		limit_train_batches=args.limit_train_batches,
 	)
 
 
