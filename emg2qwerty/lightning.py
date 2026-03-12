@@ -189,6 +189,16 @@ class TDSConvCTCModule(pl.LightningModule):
             dropout=dropout,
         )
 
+        third_encoder = Conv1DGRUEncoder(
+            num_features=first_encoder.out_dim,
+            conv_channels=conv_channels,
+            kernel_size=conv_kernel,
+            gru_hidden=gru_hidden,
+            gru_layers=gru_layers,
+            bidirectional=bidirectional,
+            dropout=dropout,
+        ) 
+
         self.model = nn.Sequential(
             SpectrogramNorm(channels=self.NUM_BANDS * self.ELECTRODE_CHANNELS),
             MultiBandRotationInvariantMLP(
@@ -199,6 +209,7 @@ class TDSConvCTCModule(pl.LightningModule):
             nn.Flatten(start_dim=2),  # -> (T, N, num_features)
             first_encoder,
             second_encoder,
+            third_encoder,
             nn.Linear(second_encoder.out_dim, charset().num_classes),
             nn.LogSoftmax(dim=-1),
         )
