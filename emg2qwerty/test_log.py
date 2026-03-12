@@ -2,8 +2,8 @@
 TODO: 
 - Output a dictionary of mock log data
 - Get the output after each epoch for the lightning.py
-
-- if I maintain metrics in a different python file and allow that python file to record into a log 
+- revised approach: throw everything into a logging file, 
+- the logging 
 """
 import pprint
 

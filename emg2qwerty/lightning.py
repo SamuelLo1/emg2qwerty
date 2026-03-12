@@ -300,6 +300,7 @@ class CERHistoryCallback(pl.Callback):
         cer = trainer.callback_metrics.get("val/CER")
         if cer is not None:
             self.history.append(round(cer.item(), 4))
+        print("current history being tracked", self.history)
 
     def on_fit_end(self, trainer, pl_module):
         print("\nval/CER per epoch:")
