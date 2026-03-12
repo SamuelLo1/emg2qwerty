@@ -39,6 +39,7 @@ class WindowedEMGDataModule(pl.LightningDataModule):
         padding: tuple[int, int],
         batch_size: int,
         num_workers: int,
+        train_fraction: float,
         train_sessions: Sequence[Path],
         val_sessions: Sequence[Path],
         test_sessions: Sequence[Path],
@@ -101,6 +102,16 @@ class WindowedEMGDataModule(pl.LightningDataModule):
                 for hdf5_path in self.test_sessions
             ]
         )
+        if (self.train_fraction < 1.0): 
+            self.train_dataset = ConcatDataset(
+                [
+                    torch.utils.data.Subset(
+                        dataset,
+                        indices=torch.randperm(len(dataset))[: int(len(dataset) * self.train_fraction)],
+                    )
+                    for dataset in self.train_dataset.datasets
+                ]
+            )
 
     def train_dataloader(self) -> DataLoader:
         return DataLoader(
