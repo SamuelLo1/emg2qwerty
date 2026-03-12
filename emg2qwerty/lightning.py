@@ -168,9 +168,10 @@ class TDSConvCTCModule(pl.LightningModule):
         bidirectional = True
         dropout = 0.1
 
-        # Build two stacked Conv1D + GRU encoders. The second encoder's
-        # input dimension equals the first encoder's output dimension.
-        
+        # out_dim of the stacked GRU encoder, computed before building nn.Sequential
+        # so we don't reference self.model before it's assigned.
+        encoder_out_dim = gru_hidden * (2 if bidirectional else 1)
+
         self.model = nn.Sequential(
             SpectrogramNorm(channels=self.NUM_BANDS * self.ELECTRODE_CHANNELS),
             MultiBandRotationInvariantMLP(
@@ -189,7 +190,7 @@ class TDSConvCTCModule(pl.LightningModule):
                 bidirectional=bidirectional,
                 dropout=dropout,
             ),
-            nn.Linear(self.model[-2].out_dim, charset().num_classes),
+            nn.Linear(encoder_out_dim, charset().num_classes),
             nn.LogSoftmax(dim=-1),
         )
 
