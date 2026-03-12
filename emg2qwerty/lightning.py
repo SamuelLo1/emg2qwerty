@@ -189,15 +189,6 @@ class TDSConvCTCModule(pl.LightningModule):
             dropout=dropout,
         )
 
-        third_encoder = Conv1DGRUEncoder(
-            num_features=first_encoder.out_dim,
-            conv_channels=conv_channels,
-            kernel_size=conv_kernel,
-            gru_hidden=gru_hidden,
-            gru_layers=gru_layers,
-            bidirectional=bidirectional,
-            dropout=dropout,
-        ) 
 
         self.model = nn.Sequential(
             SpectrogramNorm(channels=self.NUM_BANDS * self.ELECTRODE_CHANNELS),
@@ -207,15 +198,8 @@ class TDSConvCTCModule(pl.LightningModule):
                 num_bands=self.NUM_BANDS,
             ),
             nn.Flatten(start_dim=2),  # -> (T, N, num_features)
-            Conv1DGRUEncoder(
-                num_features=num_features,
-                conv_channels=conv_channels,
-                kernel_size=conv_kernel,
-                gru_hidden=gru_hidden,
-                gru_layers=gru_layers,
-                bidirectional=bidirectional,
-                dropout=dropout,
-            ),
+            first_encoder,
+            second_encoder,
             nn.Linear(gru_hidden * (2 if bidirectional else 1), charset().num_classes),
             nn.LogSoftmax(dim=-1),
         )
