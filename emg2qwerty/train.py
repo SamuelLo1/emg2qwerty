@@ -125,7 +125,7 @@ def main(config: DictConfig):
         "best_checkpoint": trainer.checkpoint_callback.best_model_path,
     }
     pprint.pprint(results, sort_dicts=False)
-    pprint.pprint("CER History:", cer_history.history, sort_dicts=False) # more elegant printing for list of dicts
+    print("CER History:", cer_history.history, sort_dicts=False) # more elegant printing for list of dicts
 
 
 if __name__ == "__main__":

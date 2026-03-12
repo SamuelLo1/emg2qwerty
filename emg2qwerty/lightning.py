@@ -297,9 +297,16 @@ class CERHistoryCallback(pl.Callback):
         self.history = []  # {epoch: CER}
 
     def on_validation_epoch_end(self, trainer, pl_module):
-        cer = trainer.callback_metrics.get("val/CER")
-        if cer is not None:
-            self.history.append(round(cer.item(), 4))
+        # Access metrics directly from the module instead of trainer.callback_metrics
+        val_metrics = pl_module.metrics["val_metrics"]
+        metric_dict = val_metrics.compute()
+        
+        # Extract CER value (handles both tensor and scalar)
+        if "val/CER" in metric_dict:
+            cer = metric_dict["val/CER"]
+            cer_value = round(cer.item(), 4) if hasattr(cer, 'item') else round(float(cer), 4)
+            self.history.append(cer_value)
+        
         print("current history being tracked", self.history)
 
     def on_fit_end(self, trainer, pl_module):
