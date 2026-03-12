@@ -28,6 +28,7 @@ from emg2qwerty.modules import (
     Conv1DBiLSTMEncoder,
     Conv1DTransformerEncoder,
     Conv1DGRUEncoder,
+    Conv1DGRUStackedEncoder
 )
 from emg2qwerty.transforms import Transform
 
@@ -169,26 +170,7 @@ class TDSConvCTCModule(pl.LightningModule):
 
         # Build two stacked Conv1D + GRU encoders. The second encoder's
         # input dimension equals the first encoder's output dimension.
-        first_encoder = Conv1DGRUEncoder(
-            num_features=num_features,
-            conv_channels=conv_channels,
-            kernel_size=conv_kernel,
-            gru_hidden=gru_hidden,
-            gru_layers=gru_layers,
-            bidirectional=bidirectional,
-            dropout=dropout,
-        )
-
-        second_encoder = Conv1DGRUEncoder(
-            num_features=first_encoder.out_dim,
-            conv_channels=conv_channels,
-            kernel_size=conv_kernel,
-            gru_hidden=gru_hidden,
-            gru_layers=gru_layers,
-            bidirectional=bidirectional,
-            dropout=dropout,
-        )
-
+        
         self.model = nn.Sequential(
             SpectrogramNorm(channels=self.NUM_BANDS * self.ELECTRODE_CHANNELS),
             MultiBandRotationInvariantMLP(
@@ -197,9 +179,17 @@ class TDSConvCTCModule(pl.LightningModule):
                 num_bands=self.NUM_BANDS,
             ),
             nn.Flatten(start_dim=2),  # -> (T, N, num_features)
-            first_encoder,
-            second_encoder,
-            nn.Linear(second_encoder.out_dim, charset().num_classes),
+            Conv1DGRUStackedEncoder(
+                in_channels=num_features,
+                conv_channels=conv_channels,
+                conv_kernel=conv_kernel,
+                gru_hidden=gru_hidden,
+                gru_layers=gru_layers,
+                numGRUStack=3,
+                bidirectional=bidirectional,
+                dropout=dropout,
+            ),
+            nn.Linear(self.model[-2].out_dim, charset().num_classes),
             nn.LogSoftmax(dim=-1),
         )
 

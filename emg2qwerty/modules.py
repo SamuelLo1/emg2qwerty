@@ -543,3 +543,91 @@ class Conv1DGRUEncoder(nn.Module):
         x, _ = self.gru(x)
         x = self.dropout(x)
         return x
+
+
+class Conv1DGRUStackedEncoder(nn.Module):
+    """Two stacked Conv1DGRUEncoders for increased modeling capacity.
+
+    Inputs: (T, N, num_features) -> Outputs: (T, N, out_dim)
+
+    Args:
+        num_features: input feature dim per timestep
+        mlp_features: list of hidden dims for the MLP before the Conv1DGRUEncoders
+        block_channels: channels for stacked Conv1d layers in Conv1DGRUEncoders
+        kernel_width: conv kernel size (padding preserves length)
+        gru_hidden: hidden size for GRU (per direction)
+        stack_GRU: number of stacked GRU
+        gru_layers: number of GRU layers
+        bidirectional: whether GRU is bidirectional
+        dropout: dropout after GRU
+    """
+    
+    def __init__(
+        self,
+        num_features: int,
+        mlp_features: Sequence[int],
+        conv_channels: Sequence[int] = (128, 128),
+        conv_kernel: int = 3,
+        gru_hidden: int = 256,
+        gru_layers: int = 2,
+        numGRUStack: int = 2,
+        bidirectional: bool = True,
+        dropout: float = 0.1,
+    ) -> None:
+        super().__init__()
+
+        assert len(conv_channels) > 0
+        self.num_features = num_features
+        self.conv_channels = list(conv_channels)
+
+        layers: list[nn.Module] = []
+        in_ch = num_features
+        for out_ch in self.conv_channels:
+            layers.extend(
+                [
+                    nn.Conv1d(in_ch, out_ch, conv_kernel, padding=conv_kernel // 2),
+                    nn.ReLU(),
+                    nn.BatchNorm1d(out_ch),
+                ]
+            )
+            in_ch = out_ch
+
+        self.conv_net = nn.Sequential(*layers)
+
+        # Build two stacked Conv1D + GRU encoders. The second encoder's
+        # input dimension equals the first encoder's output dimension.
+        for i in range(numGRUStack):
+            # dynamically create the number of GRU objects and name them 
+            setattr(
+                self,
+                f"encoder_{i+1}",
+                Conv1DGRUEncoder(
+                    num_features=in_ch if i == 0 else gru_hidden * (2 if bidirectional else 1),
+                    conv_channels=conv_channels,
+                    kernel_size=conv_kernel,
+                    gru_hidden=gru_hidden,
+                    gru_layers=gru_layers,
+                    bidirectional=bidirectional,
+                    dropout=dropout,
+                ),
+            )
+
+    def forward(self, inputs: torch.Tensor) -> torch.Tensor:
+        # inputs: (T, N, num_features)
+        T, N, F = inputs.shape
+
+        # (T, N, F) -> (N, F, T) for Conv1d
+        x = inputs.permute(1, 2, 0)
+        x = self.conv_net(x)  # (N, C_out, T)
+
+        # (N, C_out, T) -> (T, N, C_out) for GRU
+        x = x.permute(2, 0, 1)
+
+        # Pass through stacked Conv1DGRUEncoders
+        numGRUStack = len([m for m in self.children() if isinstance(m, Conv1DGRUEncoder)])
+        for i in range(numGRUStack):
+            encoder = getattr(self, f"encoder_{i+1}")
+            x = encoder(x)  # (T, N, out_dim)
+
+        return x
+        
