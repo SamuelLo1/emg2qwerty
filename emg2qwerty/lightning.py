@@ -294,12 +294,12 @@ class TDSConvCTCModule(pl.LightningModule):
 
 class CERHistoryCallback(pl.Callback):
     def __init__(self):
-        self.history = {}  # {epoch: CER}
+        self.history = []  # {epoch: CER}
 
     def on_validation_epoch_end(self, trainer, pl_module):
         cer = trainer.callback_metrics.get("val/CER")
         if cer is not None:
-            self.history[trainer.current_epoch] = round(cer.item(), 4)
+            self.history.append(round(cer.item(), 4))
 
     def on_fit_end(self, trainer, pl_module):
         print("\nval/CER per epoch:")
