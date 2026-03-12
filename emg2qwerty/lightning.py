@@ -58,7 +58,7 @@ class WindowedEMGDataModule(pl.LightningDataModule):
         self.train_sessions = train_sessions
         self.val_sessions = val_sessions
         self.test_sessions = test_sessions
-
+        self.train_fraction = train_fraction
         self.train_transform = train_transform
         self.val_transform = val_transform
         self.test_transform = test_transform
