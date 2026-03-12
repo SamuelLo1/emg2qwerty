@@ -151,6 +151,8 @@ class TDSConvCTCModule(pl.LightningModule):
         block_channels: Sequence[int],
         kernel_width: int,
         optimizer: DictConfig,
+        conv_channels: Sequence[int],
+        conv_kernel: int, 
         lr_scheduler: DictConfig,
         decoder: DictConfig,
     ) -> None:
@@ -159,9 +161,6 @@ class TDSConvCTCModule(pl.LightningModule):
 
         num_features = self.NUM_BANDS * mlp_features[-1]
 
-        # Conv + GRU encoder settings
-        conv_channels = (128, 128)
-        conv_kernel = 3
         gru_hidden = 256
         gru_layers = 3
         bidirectional = True
