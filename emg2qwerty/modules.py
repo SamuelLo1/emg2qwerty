@@ -499,6 +499,7 @@ class Conv1DGRUEncoder(nn.Module):
         gru_hidden: int = 256,
         gru_layers: int = 2,
         bidirectional: bool = True,
+        pooling: bool = True, 
         dropout: float = 0.1,
     ) -> None:
         super().__init__()
@@ -507,6 +508,7 @@ class Conv1DGRUEncoder(nn.Module):
         layers: list[nn.Module] = []
         in_ch = num_features
         for out_ch in conv_channels:
+
             layers.extend(
                 [
                     nn.Conv1d(in_ch, out_ch, kernel_size, padding=kernel_size // 2),
@@ -514,6 +516,10 @@ class Conv1DGRUEncoder(nn.Module):
                     nn.BatchNorm1d(out_ch),
                 ]
             )
+            # pooling length reduction is handled by step ^^p
+            if (pooling):
+                layers.append(nn.MaxPool1d(kernel_size=2, stride=1))
+            
             in_ch = out_ch
 
         self.conv_net = nn.Sequential(*layers)

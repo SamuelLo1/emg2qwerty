@@ -153,6 +153,7 @@ class TDSConvCTCModule(pl.LightningModule):
         optimizer: DictConfig,
         conv_channels: Sequence[int],
         conv_kernel: int, 
+        pooling:bool, 
         lr_scheduler: DictConfig,
         decoder: DictConfig,
     ) -> None:
@@ -182,6 +183,7 @@ class TDSConvCTCModule(pl.LightningModule):
                 gru_layers=gru_layers,
                 bidirectional=bidirectional,
                 dropout=dropout,
+                pooling=pooling,
             ),
             nn.Linear(gru_hidden * (2 if bidirectional else 1), charset().num_classes),
             nn.LogSoftmax(dim=-1),
