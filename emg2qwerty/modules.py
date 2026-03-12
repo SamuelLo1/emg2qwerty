@@ -495,11 +495,11 @@ class Conv1DGRUEncoder(nn.Module):
         self,
         num_features: int,
         conv_channels: Sequence[int] = (128, 128),
-        kernel_size: int = 3,
         gru_hidden: int = 256,
         gru_layers: int = 2,
         bidirectional: bool = True,
         pooling: bool = True, 
+        conv_kernels: Sequence[int] = (3,3),
         dropout: float = 0.1,
     ) -> None:
         super().__init__()
@@ -507,7 +507,8 @@ class Conv1DGRUEncoder(nn.Module):
         assert len(conv_channels) > 0
         layers: list[nn.Module] = []
         in_ch = num_features
-        for out_ch in conv_channels:
+        for i, out_ch in enumerate(conv_channels):
+            kernel_size = conv_kernels[i] if i < len(conv_kernels) else conv_kernels[-1]
 
             layers.extend(
                 [

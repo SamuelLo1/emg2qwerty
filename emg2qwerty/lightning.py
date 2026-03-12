@@ -152,7 +152,7 @@ class TDSConvCTCModule(pl.LightningModule):
         kernel_width: int,
         optimizer: DictConfig,
         conv_channels: Sequence[int],
-        conv_kernel: int, 
+        conv_kernels: Sequence[int], 
         pooling:bool, 
         lr_scheduler: DictConfig,
         decoder: DictConfig,
@@ -178,7 +178,7 @@ class TDSConvCTCModule(pl.LightningModule):
             Conv1DGRUEncoder(
                 num_features=num_features,
                 conv_channels=conv_channels,
-                kernel_size=conv_kernel,
+                conv_kernels=conv_kernels,
                 gru_hidden=gru_hidden,
                 gru_layers=gru_layers,
                 bidirectional=bidirectional,
