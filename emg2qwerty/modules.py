@@ -551,12 +551,12 @@ class Conv1DGRUStackedEncoder(nn.Module):
     Inputs: (T, N, num_features) -> Outputs: (T, N, out_dim)
 
     Args:
-        num_features: input feature dim per timestep
+        in_channels: input feature dim per timestep
         mlp_features: list of hidden dims for the MLP before the Conv1DGRUEncoders
-        block_channels: channels for stacked Conv1d layers in Conv1DGRUEncoders
-        kernel_width: conv kernel size (padding preserves length)
+        conv_channels: channels for stacked Conv1d layers in Conv1DGRUEncoders
+        conv_kernel: conv kernel size (padding preserves length)
         gru_hidden: hidden size for GRU (per direction)
-        stack_GRU: number of stacked GRU
+        numGRUStack: number of stacked GRU
         gru_layers: number of GRU layers
         bidirectional: whether GRU is bidirectional
         dropout: dropout after GRU
@@ -564,8 +564,7 @@ class Conv1DGRUStackedEncoder(nn.Module):
     
     def __init__(
         self,
-        num_features: int,
-        mlp_features: Sequence[int],
+        in_channels: int,
         conv_channels: Sequence[int] = (128, 128),
         conv_kernel: int = 3,
         gru_hidden: int = 256,
@@ -577,11 +576,11 @@ class Conv1DGRUStackedEncoder(nn.Module):
         super().__init__()
 
         assert len(conv_channels) > 0
-        self.num_features = num_features
+        self.in_channels = in_channels
         self.conv_channels = list(conv_channels)
 
         layers: list[nn.Module] = []
-        in_ch = num_features
+        in_ch = in_channels
         for out_ch in self.conv_channels:
             layers.extend(
                 [
@@ -602,7 +601,7 @@ class Conv1DGRUStackedEncoder(nn.Module):
                 self,
                 f"encoder_{i+1}",
                 Conv1DGRUEncoder(
-                    num_features=in_ch if i == 0 else gru_hidden * (2 if bidirectional else 1),
+                    in_channels=in_ch if i == 0 else gru_hidden * (2 if bidirectional else 1),
                     conv_channels=conv_channels,
                     kernel_size=conv_kernel,
                     gru_hidden=gru_hidden,
