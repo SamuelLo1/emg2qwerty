@@ -186,7 +186,7 @@ class TDSConvCTCModule(pl.LightningModule):
                 conv_kernel=conv_kernel,
                 gru_hidden=gru_hidden,
                 gru_layers=gru_layers,
-                numGRUStack=3,
+                numGRUStack=2,
                 bidirectional=bidirectional,
                 dropout=dropout,
             ),
