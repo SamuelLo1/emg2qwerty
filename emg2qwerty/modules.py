@@ -556,7 +556,7 @@ class Conv1DGRUStackedEncoder(nn.Module):
         conv_channels: channels for stacked Conv1d layers in Conv1DGRUEncoders
         conv_kernel: conv kernel size (padding preserves length)
         gru_hidden: hidden size for GRU (per direction)
-        numGRUStack: number of stacked GRU
+        numGRUStack: number of stacked GRUs
         gru_layers: number of GRU layers
         bidirectional: whether GRU is bidirectional
         dropout: dropout after GRU
@@ -592,24 +592,23 @@ class Conv1DGRUStackedEncoder(nn.Module):
             in_ch = out_ch
 
         self.conv_net = nn.Sequential(*layers)
-
-        # Build two stacked Conv1D + GRU encoders. The second encoder's
-        # input dimension equals the first encoder's output dimension.
+        # Build a list of plain GRUs after the shared conv frontend. The
+        # first GRU takes the conv output channels as input; subsequent GRUs
+        # take the previous GRU's output dim as input.
+        self.grus = nn.ModuleList()
         for i in range(numGRUStack):
-            # dynamically create the number of GRU objects and name them 
-            setattr(
-                self,
-                f"encoder_{i+1}",
-                Conv1DGRUEncoder(
-                    in_channels=in_ch if i == 0 else gru_hidden * (2 if bidirectional else 1),
-                    conv_channels=conv_channels,
-                    kernel_size=conv_kernel,
-                    gru_hidden=gru_hidden,
-                    gru_layers=gru_layers,
+            input_size = in_ch if i == 0 else gru_hidden * (2 if bidirectional else 1)
+            self.grus.append(
+                nn.GRU(
+                    input_size=input_size,
+                    hidden_size=gru_hidden,
+                    num_layers=gru_layers,
                     bidirectional=bidirectional,
-                    dropout=dropout,
-                ),
+                )
             )
+
+        self.dropout = nn.Dropout(dropout)
+        self.out_dim = gru_hidden * (2 if bidirectional else 1)
 
     def forward(self, inputs: torch.Tensor) -> torch.Tensor:
         # inputs: (T, N, num_features)
@@ -622,11 +621,10 @@ class Conv1DGRUStackedEncoder(nn.Module):
         # (N, C_out, T) -> (T, N, C_out) for GRU
         x = x.permute(2, 0, 1)
 
-        # Pass through stacked Conv1DGRUEncoders
-        numGRUStack = len([m for m in self.children() if isinstance(m, Conv1DGRUEncoder)])
-        for i in range(numGRUStack):
-            encoder = getattr(self, f"encoder_{i+1}")
-            x = encoder(x)  # (T, N, out_dim)
+        # Pass through stacked GRUs
+        for gru in self.grus:
+            x, _ = gru(x)  # (T, N, out_dim)
+            x = self.dropout(x)
 
         return x
         
