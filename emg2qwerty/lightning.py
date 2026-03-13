@@ -187,7 +187,7 @@ class TDSConvCTCModule(pl.LightningModule):
                 bidirectional=bidirectional,
                 dropout=dropout,
                 pooling=pooling,
-        ),
+        )
         second_model = Conv1DGRUEncoder(
                 num_features=num_features,
                 conv_channels=conv_channels,
@@ -197,7 +197,7 @@ class TDSConvCTCModule(pl.LightningModule):
                 bidirectional=bidirectional,
                 dropout=dropout,
                 pooling=pooling,
-        ),
+        )
 
         self.model = nn.Sequential(
             SpectrogramNorm(channels=self.NUM_BANDS * self.ELECTRODE_CHANNELS),
