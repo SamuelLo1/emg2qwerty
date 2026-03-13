@@ -25,6 +25,11 @@ specaug:
   n_freq_masks: 2
   freq_mask_param: 4
 
+channel_dropout:
+  _target_: emg2qwerty.transforms.ChannelDropout
+  p: 0.2
+  channel_dim: -1
+
 transforms:
   train:
     - ${to_tensor}
@@ -32,7 +37,7 @@ transforms:
     - ${temporal_jitter}
     - ${logspec}
     - ${specaug}
-
+    - ${channel_dropout}
   val:
     - ${to_tensor}
     - ${logspec}

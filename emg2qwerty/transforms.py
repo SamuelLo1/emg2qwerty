@@ -324,3 +324,41 @@ class AdditiveGaussianNoise:
             return tensor
         return tensor + torch.randn_like(tensor) * self.std
 
+
+@dataclass
+class ChannelDropout:
+    """Applies channel dropout by zeroing out entire electrode channels.
+    Encourages model robustness across different electrode configurations.
+    
+    By default, same dropout mask applied to all batch items. Wrap with 
+    ForEach for per-item channel masks.
+    
+    Args:
+        p (float): Probability of dropping each channel. (default: 0.2)
+        channel_dim (int): The electrode channel dimension. (default: -1)
+    """
+    
+    p: float = 0.2
+    channel_dim: int = -1
+    
+    def __post_init__(self) -> None:
+        assert 0.0 <= self.p <= 1.0
+    
+    def __call__(self, tensor: torch.Tensor) -> torch.Tensor:
+        if self.p == 0.0:
+            return tensor
+        
+        # Generate dropout mask: True = keep, False = drop
+        n_channels = tensor.shape[self.channel_dim]
+        channel_mask = torch.rand(n_channels) > self.p
+        channel_mask = channel_mask.to(tensor.device)
+        
+        # Reshape mask to broadcast correctly across batch/time dims
+        # e.g., if channel_dim = -1 and tensor is (T, N, C), 
+        # mask shape should be (1, 1, C)
+        mask_shape = [1] * tensor.ndim
+        mask_shape[self.channel_dim] = n_channels
+        channel_mask = channel_mask.reshape(mask_shape)
+        
+        # Zero out dropped channels (preserves shape for downstream transforms)
+        return tensor * channel_mask
