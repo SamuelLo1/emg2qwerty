@@ -177,6 +177,9 @@ class TDSConvCTCModule(pl.LightningModule):
         gru_layers = 3
         bidirectional = True
         dropout = 0.1
+        
+        # Output dimension from first encoder
+        first_model_out_dim = gru_hidden * (2 if bidirectional else 1)
 
         first_model = Conv1DGRUEncoder(
                 num_features=num_features,
@@ -189,7 +192,7 @@ class TDSConvCTCModule(pl.LightningModule):
                 pooling=pooling,
         )
         second_model = Conv1DGRUEncoder(
-                num_features=num_features,
+                num_features=first_model_out_dim,
                 conv_channels=conv_channels,
                 conv_kernels=conv_kernels,
                 gru_hidden=gru_hidden,
