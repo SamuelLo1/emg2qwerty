@@ -310,5 +310,4 @@ class CERHistoryCallback(pl.Callback):
         print("current history being tracked", self.history)
 
     def on_fit_end(self, trainer, pl_module):
-        print("\nval/CER per epoch:")
-        print(self.history)
+        print("CER History:",self.history)
