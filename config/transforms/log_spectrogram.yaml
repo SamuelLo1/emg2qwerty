@@ -30,14 +30,20 @@ channel_dropout:
   p: 0.2
   channel_dim: -1
 
+random_time_shift: 
+  _target_: emg2qwerty.transforms.RandomTimeShift
+  max_shift: 120  # Max 60ms shift for 2kHz EMG
+  p: 0.5
+  time_dim: 0
+
 transforms:
   train:
     - ${to_tensor}
     - ${band_rotation}
+    - ${random_time_shift}
     - ${temporal_jitter}
     - ${logspec}
     - ${specaug}
-    - ${channel_dropout}
   val:
     - ${to_tensor}
     - ${logspec}
