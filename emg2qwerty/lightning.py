@@ -178,15 +178,7 @@ class TDSConvCTCModule(pl.LightningModule):
         bidirectional = True
         dropout = 0.1
 
-        self.model = nn.Sequential(
-            SpectrogramNorm(channels=self.NUM_BANDS * self.ELECTRODE_CHANNELS),
-            MultiBandRotationInvariantMLP(
-                in_features=in_features,
-                mlp_features=mlp_features,
-                num_bands=self.NUM_BANDS,
-            ),
-            nn.Flatten(start_dim=2),  # -> (T, N, num_features)
-            Conv1DGRUEncoder(
+        first_model = Conv1DGRUEncoder(
                 num_features=num_features,
                 conv_channels=conv_channels,
                 conv_kernels=conv_kernels,
@@ -195,7 +187,28 @@ class TDSConvCTCModule(pl.LightningModule):
                 bidirectional=bidirectional,
                 dropout=dropout,
                 pooling=pooling,
+        ),
+        second_model = Conv1DGRUEncoder(
+                num_features=num_features,
+                conv_channels=conv_channels,
+                conv_kernels=conv_kernels,
+                gru_hidden=gru_hidden,
+                gru_layers=gru_layers,
+                bidirectional=bidirectional,
+                dropout=dropout,
+                pooling=pooling,
+        ),
+
+        self.model = nn.Sequential(
+            SpectrogramNorm(channels=self.NUM_BANDS * self.ELECTRODE_CHANNELS),
+            MultiBandRotationInvariantMLP(
+                in_features=in_features,
+                mlp_features=mlp_features,
+                num_bands=self.NUM_BANDS,
             ),
+            nn.Flatten(start_dim=2),  # -> (T, N, num_features)
+            first_model,
+            second_model,
             nn.Linear(gru_hidden * (2 if bidirectional else 1), charset().num_classes),
             nn.LogSoftmax(dim=-1),
         )
