@@ -35,6 +35,8 @@ random_time_shift:
   max_shift: 120  # Max 60ms shift for 2kHz EMG
   p: 0.5
   time_dim: 0
+  pad_mode: reflect
+  
 
 transforms:
   train:
