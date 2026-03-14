@@ -25,7 +25,9 @@ from emg2qwerty.modules import (
     MultiBandRotationInvariantMLP,
     SpectrogramNorm,
     TDSConvEncoder,
-    Conv1DBiLSTMEncoder
+    Conv1DBiLSTMEncoder,
+    Conv1DTransformerEncoder,
+    Conv1DGRUEncoder,
 )
 from emg2qwerty.transforms import Transform
 
@@ -37,6 +39,7 @@ class WindowedEMGDataModule(pl.LightningDataModule):
         padding: tuple[int, int],
         batch_size: int,
         num_workers: int,
+        train_fraction: float,
         train_sessions: Sequence[Path],
         val_sessions: Sequence[Path],
         test_sessions: Sequence[Path],
@@ -55,7 +58,7 @@ class WindowedEMGDataModule(pl.LightningDataModule):
         self.train_sessions = train_sessions
         self.val_sessions = val_sessions
         self.test_sessions = test_sessions
-
+        self.train_fraction = train_fraction
         self.train_transform = train_transform
         self.val_transform = val_transform
         self.test_transform = test_transform
@@ -99,6 +102,16 @@ class WindowedEMGDataModule(pl.LightningDataModule):
                 for hdf5_path in self.test_sessions
             ]
         )
+        if (self.train_fraction < 1.0): 
+            self.train_dataset = ConcatDataset(
+                [
+                    torch.utils.data.Subset(
+                        dataset,
+                        indices=torch.randperm(len(dataset))[: int(len(dataset) * self.train_fraction)],
+                    )
+                    for dataset in self.train_dataset.datasets
+                ]
+            )
 
     def train_dataloader(self) -> DataLoader:
         return DataLoader(
@@ -149,6 +162,9 @@ class TDSConvCTCModule(pl.LightningModule):
         block_channels: Sequence[int],
         kernel_width: int,
         optimizer: DictConfig,
+        conv_channels: Sequence[int],
+        conv_kernels: Sequence[int], 
+        pooling:bool, 
         lr_scheduler: DictConfig,
         decoder: DictConfig,
     ) -> None:
@@ -156,11 +172,35 @@ class TDSConvCTCModule(pl.LightningModule):
         self.save_hyperparameters()
 
         num_features = self.NUM_BANDS * mlp_features[-1]
-        lstm_hidden = 256
-        lstm_layers = 2
-        conv_channels = (128, 128)
-        conv_kernel = 3
+
+        gru_hidden = 256
+        gru_layers = 3
+        bidirectional = True
         dropout = 0.1
+        
+        # Output dimension from first encoder
+        first_model_out_dim = gru_hidden * (2 if bidirectional else 1)
+
+        first_model = Conv1DGRUEncoder(
+                num_features=num_features,
+                conv_channels=conv_channels,
+                conv_kernels=conv_kernels,
+                gru_hidden=gru_hidden,
+                gru_layers=gru_layers,
+                bidirectional=bidirectional,
+                dropout=dropout,
+                pooling=pooling,
+        )
+        second_model = Conv1DGRUEncoder(
+                num_features=first_model_out_dim,
+                conv_channels=conv_channels,
+                conv_kernels=conv_kernels,
+                gru_hidden=gru_hidden,
+                gru_layers=gru_layers,
+                bidirectional=bidirectional,
+                dropout=dropout,
+                pooling=pooling,
+        )
 
         self.model = nn.Sequential(
             SpectrogramNorm(channels=self.NUM_BANDS * self.ELECTRODE_CHANNELS),
@@ -169,16 +209,10 @@ class TDSConvCTCModule(pl.LightningModule):
                 mlp_features=mlp_features,
                 num_bands=self.NUM_BANDS,
             ),
-            nn.Flatten(start_dim=2),
-            Conv1DBiLSTMEncoder(
-                num_features=num_features,
-                conv_channels=conv_channels,
-                kernel_size=conv_kernel,
-                lstm_hidden=lstm_hidden,
-                lstm_layers=lstm_layers,
-                dropout=dropout,
-            ),
-            nn.Linear(lstm_hidden * 2, charset().num_classes),
+            nn.Flatten(start_dim=2),  # -> (T, N, num_features)
+            first_model,
+            second_model,
+            nn.Linear(gru_hidden * (2 if bidirectional else 1), charset().num_classes),
             nn.LogSoftmax(dim=-1),
         )
 
@@ -272,3 +306,24 @@ class TDSConvCTCModule(pl.LightningModule):
             optimizer_config=self.hparams.optimizer,
             lr_scheduler_config=self.hparams.lr_scheduler,
         )
+
+
+class CERHistoryCallback(pl.Callback):
+    def __init__(self):
+        self.history = []  # {epoch: CER}
+
+    def on_validation_epoch_end(self, trainer, pl_module):
+        # Access metrics directly from the module instead of trainer.callback_metrics
+        val_metrics = pl_module.metrics["val_metrics"]
+        metric_dict = val_metrics.compute()
+        
+        # Extract CER value (handles both tensor and scalar)
+        if "val/CER" in metric_dict:
+            cer = metric_dict["val/CER"]
+            cer_value = round(cer.item(), 4) if hasattr(cer, 'item') else round(float(cer), 4)
+            self.history.append(cer_value)
+        
+        print("current history being tracked", self.history)
+
+    def on_fit_end(self, trainer, pl_module):
+        print("CER History:",self.history)

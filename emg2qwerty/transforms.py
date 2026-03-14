@@ -157,6 +157,90 @@ class TemporalAlignmentJitter:
 
 
 @dataclass
+class RandomTimeShift:
+    """Applies a random global temporal shift to the full signal window.
+
+    Shift is sampled uniformly from ``[-max_shift, max_shift]`` and applied
+    along ``time_dim``. The transform preserves tensor shape using pad-and-crop
+    (no circular wraparound).
+
+    Args:
+        max_shift (int): Maximum absolute shift in timesteps/samples.
+        p (float): Probability of applying the shift per call.
+        time_dim (int): Temporal dimension. (default: 0)
+        pad_mode (str): Padding strategy for exposed boundary values.
+            Supported values: ``"constant"``, ``"reflect"``.
+        pad_value (float): Constant pad value used when
+            ``pad_mode == "constant"``.
+    """
+
+    max_shift: int
+    p: float = 1.0
+    time_dim: int = 0
+    pad_mode: str = "constant"
+    pad_value: float = 0.0
+
+    def __post_init__(self) -> None:
+        assert self.max_shift >= 0
+        assert 0.0 <= self.p <= 1.0
+        assert self.pad_mode in {"constant", "reflect"}
+
+    def __call__(self, tensor: torch.Tensor) -> torch.Tensor:
+        if self.max_shift == 0 or np.random.rand() > self.p:
+            return tensor
+
+        x = tensor.movedim(self.time_dim, 0)
+        T = x.shape[0]
+        if T == 0:
+            return tensor
+
+        max_shift = self.max_shift
+        if self.pad_mode == "reflect":
+            # Reflection requires at least two timesteps and pad < T.
+            if T <= 1:
+                return tensor
+            max_shift = min(max_shift, T - 1)
+
+        shift = np.random.randint(-max_shift, max_shift + 1)
+        if shift == 0:
+            return tensor
+
+        if shift > 0:
+            pad = self._left_pad(x, shift)
+            y = torch.cat([pad, x[:-shift]], dim=0)
+        else:
+            shift = -shift
+            pad = self._right_pad(x, shift)
+            y = torch.cat([x[shift:], pad], dim=0)
+
+        return y.movedim(0, self.time_dim)
+
+    def _left_pad(self, x: torch.Tensor, amount: int) -> torch.Tensor:
+        if self.pad_mode == "constant":
+            return torch.full(
+                (amount, *x.shape[1:]),
+                fill_value=self.pad_value,
+                dtype=x.dtype,
+                device=x.device,
+            )
+
+        # Reflect left boundary. For amount <= T - 1, this mirrors x[1:amount+1].
+        return x[1 : amount + 1].flip(0)
+
+    def _right_pad(self, x: torch.Tensor, amount: int) -> torch.Tensor:
+        if self.pad_mode == "constant":
+            return torch.full(
+                (amount, *x.shape[1:]),
+                fill_value=self.pad_value,
+                dtype=x.dtype,
+                device=x.device,
+            )
+
+        # Reflect right boundary. For amount <= T - 1, this mirrors x[-amount-1:-1].
+        return x[-amount - 1 : -1].flip(0)
+
+
+@dataclass
 class LogSpectrogram:
     """Creates log10-scaled spectrogram from an EMG signal. In the case of
     multi-channeled signal, the channels are treated independently.
@@ -324,3 +408,41 @@ class AdditiveGaussianNoise:
             return tensor
         return tensor + torch.randn_like(tensor) * self.std
 
+
+@dataclass
+class ChannelDropout:
+    """Applies channel dropout by zeroing out entire electrode channels.
+    Encourages model robustness across different electrode configurations.
+    
+    By default, same dropout mask applied to all batch items. Wrap with 
+    ForEach for per-item channel masks.
+    
+    Args:
+        p (float): Probability of dropping each channel. (default: 0.2)
+        channel_dim (int): The electrode channel dimension. (default: -1)
+    """
+    
+    p: float = 0.2
+    channel_dim: int = -1
+    
+    def __post_init__(self) -> None:
+        assert 0.0 <= self.p <= 1.0
+    
+    def __call__(self, tensor: torch.Tensor) -> torch.Tensor:
+        if self.p == 0.0:
+            return tensor
+        
+        # Generate dropout mask: True = keep, False = drop
+        n_channels = tensor.shape[self.channel_dim]
+        channel_mask = torch.rand(n_channels) > self.p
+        channel_mask = channel_mask.to(tensor.device)
+        
+        # Reshape mask to broadcast correctly across batch/time dims
+        # e.g., if channel_dim = -1 and tensor is (T, N, C), 
+        # mask shape should be (1, 1, C)
+        mask_shape = [1] * tensor.ndim
+        mask_shape[self.channel_dim] = n_channels
+        channel_mask = channel_mask.reshape(mask_shape)
+        
+        # Zero out dropped channels (preserves shape for downstream transforms)
+        return tensor * channel_mask

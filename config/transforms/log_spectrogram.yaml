@@ -25,14 +25,27 @@ specaug:
   n_freq_masks: 2
   freq_mask_param: 4
 
+channel_dropout:
+  _target_: emg2qwerty.transforms.ChannelDropout
+  p: 0.2
+  channel_dim: -1
+
+random_time_shift: 
+  _target_: emg2qwerty.transforms.RandomTimeShift
+  max_shift: 120  # Max 60ms shift for 2kHz EMG
+  p: 0.5
+  time_dim: 0
+  pad_mode: reflect
+  
+
 transforms:
   train:
     - ${to_tensor}
     - ${band_rotation}
+    - ${random_time_shift}
     - ${temporal_jitter}
     - ${logspec}
     - ${specaug}
-
   val:
     - ${to_tensor}
     - ${logspec}

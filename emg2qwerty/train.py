@@ -16,7 +16,7 @@ import pytorch_lightning as pl
 from hydra.utils import get_original_cwd, instantiate
 from omegaconf import DictConfig, ListConfig, OmegaConf
 
-from emg2qwerty import transforms, utils
+from emg2qwerty import transforms, utils, lightning
 from emg2qwerty.transforms import Transform
 
 
@@ -90,6 +90,9 @@ def main(config: DictConfig):
     callback_configs = config.get("callbacks", [])
     callbacks = [instantiate(cfg) for cfg in callback_configs]
 
+    cer_history = lightning.CERHistoryCallback()
+    callbacks.append(cer_history)
+
     # Initialize trainer
     trainer = pl.Trainer(
         **config.trainer,
@@ -122,6 +125,7 @@ def main(config: DictConfig):
         "best_checkpoint": trainer.checkpoint_callback.best_model_path,
     }
     pprint.pprint(results, sort_dicts=False)
+    print("CER History:", cer_history.history) # more elegant printing for list of dicts
 
 
 if __name__ == "__main__":
